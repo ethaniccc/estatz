@@ -15,7 +15,7 @@ const (
 // - Packet data (??? bytes)
 type Packet interface {
 	ID() uint64
-	Marshal(io protocol.IO, protoID uint64)
+	Marshal(io protocol.IO, protoID uint64) error
 }
 
 type PacketHeader struct {

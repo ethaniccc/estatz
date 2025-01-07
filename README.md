@@ -1,2 +1,2 @@
 # EStatz
-One-way UDP server for obtaining data points (could be used for stat stuff)
+A UDP server that is mainly intended for reading short batches of information and processing them.
