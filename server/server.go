@@ -4,11 +4,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"runtime"
 	"sync/atomic"
 	"time"
 
 	"github.com/ethaniccc/estatz/packet"
 	"github.com/rs/zerolog"
+	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
 const queueTimeout = time.Second * 10
@@ -19,8 +21,9 @@ type PacketHandler func(sender *net.UDPAddr, header *packet.PacketHeader, pk pac
 // The server is responsible for interpreting and storing all information given from the clients.
 // It should only recieve data, and never should have to send a response back to any sender.
 type Server struct {
-	// logger is the logger used for the server.
-	logger *zerolog.Logger
+	// cfg is a pointer to the config of the server.
+	cfg *Config
+
 	// conn is the underlying connection from where the Server reads incoming packets from.
 	conn *net.UDPConn
 	// msgQueue is the queue for messages sent by clients to the server. This queue is handled by various
@@ -29,7 +32,11 @@ type Server struct {
 	// running is an atomic boolean that is set to true once the server starts listening for connections.
 	running atomic.Bool
 
+	// packetHandlers is a slice of functions that will be handling packets.
 	packetHandlers []PacketHandler
+
+	// logger is the logger used for the server.
+	logger zerolog.Logger
 }
 
 func New(cfg Config) *Server {
@@ -39,9 +46,12 @@ func New(cfg Config) *Server {
 	}
 
 	return &Server{
-		conn:           conn,
+		cfg: &cfg,
+
+		conn:   conn,
+		logger: cfg.Logger,
+
 		msgQueue:       make(chan *packet.Message, 65535),
-		closeChan:      make(chan struct{}, 1),
 		packetHandlers: make([]PacketHandler, 0),
 	}
 }
@@ -60,58 +70,71 @@ func (srv *Server) Start() {
 		panic("server is already started")
 	}
 	srv.running.Store(true)
+
+	workerCount := srv.cfg.Workers
+	if workerCount == 0 {
+		workerCount = runtime.NumCPU()
+	}
+
+	for i := 0; i < workerCount; i++ {
+		go srv.worker(i)
+	}
+	srv.logger.Info().Msg("EStatz server started...")
 	srv.listen()
 }
 
 // Stop stops the server and it's processing of packets.
 func (srv *Server) Stop() {
+	if !srv.running.Load() {
+		panic("server is already stopped")
+	}
+
 	srv.running.Store(false)
 	close(srv.msgQueue)
 }
 
 func (srv *Server) worker(id int) {
-	defer func() {
-		if v := recover(); v != nil {
-			srv.logger.Err(fmt.Errorf("%v", v)).Int("workerID", id).Msg("worker crashed")
-			go srv.worker(id)
-		}
-	}()
 	srv.logger.Debug().Int("worker", id).Msg("server worker started")
-
 	for msg := range srv.msgQueue {
 		srv.handleMessage(msg)
 	}
 }
 
 func (srv *Server) handleMessage(msg *packet.Message) {
+	// This can happen if a packet is improperly encoded and has an insufficient amount of bytes.
 	defer func() {
 		if v := recover(); v != nil {
 			srv.logger.Err(fmt.Errorf("%v", v)).
 				Str("sender", msg.Sender().String()).
 				Msg("error occured when attempting to process message")
-			// TODO: Sentry logging.
 		}
 	}()
 
-	header, pk, ok := msg.Decode()
-	if !ok {
+	// Create a new reader with the message's buffer
+	reader := protocol.NewReader(msg.Buffer(), 0, false)
+	// Decode the header information. It is assumed that throughout versions, the structure
+	// of this header will remain the same for backwards-compatiability.
+	header := &packet.PacketHeader{}
+	header.Marshal(reader)
+
+	if pk, packetFound := packet.Find(header.PacketID); packetFound {
+		pk.Decode(reader, header.Version)
+		for _, handler := range srv.packetHandlers {
+			handler(msg.Sender(), header, pk)
+		}
+	} else {
 		srv.logger.Warn().
 			Str("addr", msg.Sender().String()).
 			Uint64("packetID", header.PacketID).
-			Str("JWT", base64.StdEncoding.EncodeToString(header.JWT)).
+			Str("passphrase", base64.StdEncoding.EncodeToString(header.Passphrase)).
 			Msg("unable to find packet with ID")
-		msg.Dispose()
-		return
 	}
-
-	for _, handler := range srv.packetHandlers {
-		handler(msg.Sender(), header, pk)
-	}
+	// Return the message back to the pool so that it can be reused.
 	msg.Dispose()
 }
 
 func (srv *Server) listen() {
-	msgBuffer := make([]byte, 1492)
+	msgBuffer := make([]byte, packet.MaxPacketSize)
 	for srv.running.Load() {
 		size, senderAddr, err := srv.conn.ReadFromUDP(msgBuffer)
 		if err != nil {

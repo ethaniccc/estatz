@@ -1,10 +1,10 @@
 package packet
 
-type pkFunc func() Packet
+type PacketFunc func() Packet
 
-var pkPool map[uint64]pkFunc
+var pkPool = make(map[uint64]PacketFunc)
 
-func Register(pk pkFunc) {
+func Register(pk PacketFunc) {
 	pkPool[pk().ID()] = pk
 }
 

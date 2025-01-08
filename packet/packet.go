@@ -4,33 +4,29 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 )
 
-const (
-	CurrentVersion = (0 << 24) | (0 << 16) | (0 << 8) | 1
-)
+var MaxPacketSize int = 1200
 
-// All packets sent to the EStatz server should be formatted as such:
-// - Authentication JWT (??? bytes)
-// - Client version (8 bytes)
-// - Packet ID (4 bytes)
-// - Packet data (??? bytes)
 type Packet interface {
+	Encodable
+	Decodable
+
 	ID() uint64
-	Marshal(io protocol.IO, protoID uint64) error
 }
 
 type PacketHeader struct {
-	// JWT is the JWT token provided to prove that the client is authorized to send packets
-	// to this server. This JWT can be authorized by the handler functions provided.
-	JWT []byte
-	// ClientVer represents the version the client is encoding/decoding packets from. This supports
-	// backwards compatiability if a server update occurs.
-	ClientVer uint64
+	// Passphrase is a token provided to prove that the client is authorized to send packets
+	// to this server. This should be handled by the specified handlers.
+	Passphrase []byte
+	// Version represents the version the sender is encoding/decoding packets from. This supports
+	// backwards compatiability if a server update occurs, but the client is still running on an
+	// older version.
+	Version uint64
 	// PacketID is the ID of the packet to be decoded.
 	PacketID uint64
 }
 
 func (h *PacketHeader) Marshal(io protocol.IO) {
-	io.ByteSlice(&h.JWT)
-	io.Uint64(&h.ClientVer)
+	io.ByteSlice(&h.Passphrase)
+	io.Uint64(&h.Version)
 	io.Uint64(&h.PacketID)
 }
