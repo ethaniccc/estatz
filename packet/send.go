@@ -33,11 +33,22 @@ func Send(from *net.UDPConn, to *net.UDPAddr, header *PacketHeader, pk Packet) e
 
 	// Now that we know the cap of the buffer hasn't been exceeded, we can return this packet back to the buffer pool.
 	defer bufferPool.Put(buf)
-	if bytesWritten, err := from.WriteToUDP(buf.Bytes(), to); err != nil {
-		return err
-	} else if bytesWritten != pkSize {
-		return fmt.Errorf("expected %d bytes to be written to connection, only wrote %d", pkSize, bytesWritten)
+	if to != nil {
+		if bytesWritten, err := from.WriteToUDP(buf.Bytes(), to); err != nil {
+			return err
+		} else if bytesWritten != pkSize {
+			return fmt.Errorf("expected %d bytes to be written to connection, only wrote %d", pkSize, bytesWritten)
+		} else {
+			return nil
+		}
 	} else {
-		return nil
+		// We can use (*UDPConn).Write() if the connection isn't meant for one specific address.
+		if bytesWritten, err := from.Write(buf.Bytes()); err != nil {
+			return err
+		} else if bytesWritten != pkSize {
+			return fmt.Errorf("expected %d bytes to be written to connection, only wrote %d", pkSize, bytesWritten)
+		} else {
+			return nil
+		}
 	}
 }
